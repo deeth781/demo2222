@@ -1,3 +1,6 @@
+
+import warnings
+warnings.filterwarnings("ignore")  
 import discord
 import json
 import os
@@ -11,6 +14,7 @@ from discord.ext import commands, tasks
 import gc
 import threading
 import time
+import shutil
 import requests
 from typing import Optional
 import urllib
@@ -107,8 +111,15 @@ def check_task_limit():
 
 def load_config():
     if os.path.exists('config.json'):
-        with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                data = f.read().strip()
+                if not data:  # file rỗng
+                    return None
+                return json.loads(data)
+        except json.JSONDecodeError:
+            print("⚠️ File config.json lỗi hoặc sai format, tạo lại...")
+            return None
     return None
 
 def save_config(config):
@@ -137,7 +148,7 @@ def create_initial_config():
 ##    config = create_initial_config()
 config = load_config()
 if config:
-    choice = "y"  # auto chọn Y
+    choice = "y"  
     if choice != 'y':
         config = create_initial_config()
 else:
@@ -3065,6 +3076,34 @@ class TreoView(discord.ui.View):
         modal = TreoNormalModal()
         await interaction.response.send_modal(modal)
 
+import discord, datetime
+
+
+box_cache = {}
+
+class BoxSelect(discord.ui.Select):
+    def __init__(self, ids, names, user_id):
+        options = []
+        for i, (id_, name) in enumerate(zip(ids, names)):
+            options.append(discord.SelectOption(
+                label=f"{i+1}. {name}",
+                description=f"ID: {id_}",
+                value=id_
+            ))
+        super().__init__(placeholder="📌 Chọn 1 Box để lưu tạm", min_values=1, max_values=1, options=options)
+        self.user_id = user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_id = self.values[0]
+        box_cache[self.user_id] = selected_id  # lưu vào bộ nhớ tạm
+        embed = discord.Embed(
+            title="✅ Đã Lưu Box",
+            description=f"Bạn đã chọn Box với ID:\n`{selected_id}` 🧃",
+            color=0xFFD700,
+            timestamp=datetime.datetime.now(datetime.UTC)
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 class ListBoxModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="🍪 Nhập Cookies Facebook", timeout=None)
@@ -3080,13 +3119,13 @@ class ListBoxModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         loading_embed = discord.Embed(
             title="⏰ Đang Xử Lý...",
-            description="Bot Đang Lấy List Box, Vui Lòng Đợi...",
+            description="Bot đang lấy danh sách box, vui lòng chờ...",
             color=0xFFD700
         )
         await interaction.response.send_message(embed=loading_embed, ephemeral=True)
         
         try:
-            fb = facebook(self.cookies.value)
+            fb = facebook(self.cookies.value)   # <-- bạn giữ nguyên hàm fbTools của bạn
             fbt = fbTools(fb.data)
             
             success = fbt.getAllThreadList()
@@ -3106,47 +3145,54 @@ class ListBoxModal(discord.ui.Modal):
                                     "name": thread_names[j],
                                     "id": thread_ids[j]
                                 })
-                            pages.append(page_data)
+                            if page_data:
+                                pages.append(page_data)
                         
-                        view = PaginationView(pages, len(thread_ids))
-                        initial_embed = view.create_embed()
-                        await interaction.followup.send(embed=initial_embed, view=view, ephemeral=False)
+                        if pages:
+                            view = PaginationView(pages, len(thread_ids), interaction.user.id)
+                            initial_embed = view.create_embed()
+                            await interaction.followup.send(embed=initial_embed, view=view, ephemeral=False)
+                        else:
+                            await interaction.followup.send("⚠️ Không có box nào.", ephemeral=True)
                     else:
                         embed = discord.Embed(
-                            title="📋 Danh Sách Box Facebook",
+                            title="📋 Danh Sách Box Facebook 🧃",
                             color=0x00FF00,
-                            timestamp=datetime.datetime.utcnow()
+                            timestamp=datetime.datetime.now(datetime.UTC)
                         )
-                        
                         description = ""
                         for i in range(len(thread_ids)):
                             description += f"**{i+1}.** {thread_names[i]}\n`{thread_ids[i]}`\n\n"
-                        
                         embed.description = description
-                        embed.set_footer(text=f"Tổng Cộng: {len(thread_ids)} Box")
+                        embed.set_footer(text=f"Tổng cộng: {len(thread_ids)} Box")
                         
-                        await interaction.followup.send(embed=embed, ephemeral=False)
+                        view = discord.ui.View(timeout=None)
+                        if thread_ids:
+                            view.add_item(BoxSelect(thread_ids, thread_names, interaction.user.id))
+                        
+                        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
                 else:
                     error_embed = discord.Embed(
                         title="❌ Lỗi",
-                        description="Không Thể Lấy List Box Từ Data",
+                        description="Không thể lấy list box từ dữ liệu.",
                         color=0xFF0000
                     )
-                    await interaction.followup.send(embed=error_embed, ephemeral=False)
+                    await interaction.followup.send(embed=error_embed, ephemeral=True)
             else:
                 error_embed = discord.Embed(
                     title="❌ Lỗi Cookies",
-                    description="Không Thể Lấy Danh Sách Nhóm, Vui Lòng Check Lại Cookies.",
+                    description="Không thể lấy danh sách nhóm, vui lòng check lại cookies.",
                     color=0xFF0000
                 )
-                await interaction.followup.send(embed=error_embed, ephemeral=False)
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
         except Exception as e:
             error_embed = discord.Embed(
                 title="⚠️ Đã Xảy Ra Lỗi",
                 description=f"{e}",
                 color=0xFF0000
             )
-            await interaction.followup.send(embed=error_embed, ephemeral=False)
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+
 
 class ListBoxView(discord.ui.View):
     def __init__(self):
@@ -3157,44 +3203,48 @@ class ListBoxView(discord.ui.View):
         modal = ListBoxModal()
         await interaction.response.send_modal(modal)
 
+
 class PaginationView(discord.ui.View):
-    def __init__(self, pages, total_items):
+    def __init__(self, pages, total_items, user_id):
         super().__init__(timeout=300)
-        self.pages = pages
+        self.pages = pages or []
         self.current_page = 0
         self.total_items = total_items
+        self.user_id = user_id
+
+        if self.pages:
+            ids = [item.get("id") for item in self.pages[0] if item]
+            names = [item.get("name") for item in self.pages[0] if item]
+            if ids and names:
+                self.add_item(BoxSelect(ids, names, user_id))
 
     def create_embed(self):
         embed = discord.Embed(
-            title="📋 Danh Sách Box Facebook",
+            title="📋 Danh Sách Box Facebook 🧃",
             color=0x00FF00,
-            timestamp=datetime.datetime.utcnow()
+            timestamp=datetime.datetime.now(datetime.UTC)
         )
-        
+        if not self.pages or not self.pages[self.current_page]:
+            embed.description = "⚠️ Không có dữ liệu box."
+            return embed
+
         current_page_data = self.pages[self.current_page]
         description = ""
-        
         for item in current_page_data:
-            description += f"**{item['index']}.** {item['name']}\n`{item['id']}`\n\n"
-        
-        embed.description = description
-        
+            if item:
+                description += f"**{item['index']}.** {item['name']}\n`{item['id']}`\n\n"
+
+        embed.description = description or "⚠️ Trang trống."
         embed.set_footer(
-            text=f"Trang {self.current_page + 1}/{len(self.pages)} • Tổng Cộng: {self.total_items} Box"
+            text=f"Trang {self.current_page + 1}/{len(self.pages)} • Tổng cộng: {self.total_items} Box"
         )
-        
         return embed
 
     @discord.ui.button(emoji="⬅️", style=discord.ButtonStyle.secondary, disabled=True)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page > 0:
             self.current_page -= 1
-            
-            self.previous_page.disabled = self.current_page == 0
-            self.next_page.disabled = False
-            
-            embed = self.create_embed()
-            await interaction.response.edit_message(embed=embed, view=self)
+            await self.update_page(interaction)
         else:
             await interaction.response.defer()
 
@@ -3202,20 +3252,35 @@ class PaginationView(discord.ui.View):
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page < len(self.pages) - 1:
             self.current_page += 1
-            
-            self.next_page.disabled = self.current_page == len(self.pages) - 1
-            self.previous_page.disabled = False
-            
-            embed = self.create_embed()
-            await interaction.response.edit_message(embed=embed, view=self)
+            await self.update_page(interaction)
         else:
             await interaction.response.defer()
+
+    async def update_page(self, interaction: discord.Interaction):
+      
+        for child in list(self.children):
+            if isinstance(child, BoxSelect):
+                self.remove_item(child)
+
+    
+        current_page_data = self.pages[self.current_page]
+        ids = [item.get("id") for item in current_page_data if item]
+        names = [item.get("name") for item in current_page_data if item]
+        if ids and names:
+            self.add_item(BoxSelect(ids, names, self.user_id))
+
+      
+        self.previous_page.disabled = self.current_page == 0
+        self.next_page.disabled = self.current_page == len(self.pages) - 1
+
+        embed = self.create_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Đóng", emoji="❌", style=discord.ButtonStyle.danger)
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="✅ Đã Đóng",
-            description="Danh Sách Đã Được Đóng",
+            description="Danh sách đã được đóng",
             color=0x808080
         )
         await interaction.response.edit_message(embed=embed, view=None)
@@ -3223,6 +3288,7 @@ class PaginationView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
+
 
 class TreoMediaModal(discord.ui.Modal):
     def __init__(self):
@@ -3852,141 +3918,6 @@ async def nhay(ctx):
     await ctx.send(embed=embed, view=view)
 
 
-@bot.command()
-
-async def danhsachtask(ctx):
-    user_id = str(ctx.author.id)
-    is_vip = user_id == config['ownerVIP']
-    tasks = []
-    if os.path.exists('data'):
-        for folder in os.listdir('data'):
-            folder_path = f"data/{folder}"
-            if os.path.isdir(folder_path) and os.path.exists(f"{folder_path}/luutru.txt"):
-                with open(f"{folder_path}/luutru.txt", "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                parts = content.split(" | ")
-                if len(parts) >= 4:
-                    task_owner = "Unknown"
-                    if parts[3] == "nhay_top_tag" and len(parts) >= 7:
-                        task_owner = parts[6]
-                    elif parts[3] == "treoso" and len(parts) >= 5:
-                        task_owner = parts[4]
-                    elif parts[3] == "nhay_zalo" and len(parts) >= 8:
-                        task_owner = parts[4]
-                    elif len(parts) >= 5:
-                        task_owner = parts[4]
-                    
-                    if is_vip or task_owner == user_id:
-                        created_timestamp = os.path.getctime(folder_path)
-                        created_time = datetime.datetime.fromtimestamp(created_timestamp).strftime("%d-%m-%Y")
-                        method_map = {
-                            "treo_media": "Treo Ảnh/Video",
-                            "treo_contact": "Treo Share Contact",
-                            "treo_normal": "Treo Normal",
-                            "nhay_normal": "Nhây Thường",
-                            "nhay_tag": "Nhây Tag",
-                            "nhay_top_tag": "Nhây Top Tag",
-                            "nhay_zalo": "Nhây Zalo",
-                            "treoso": "Treo Sớ",
-                            "nhay_poll": "Nhây Poll",
-                            "treo_discord": "Treo Discord",
-                            "nhay_discord": "Nhây Discord",
-                            "nhay_tag_discord": "Nhây Tag Discord"
-                        }
-                        method = method_map.get(parts[3], parts[3])
-                        if parts[3] == "nhay_top_tag" and len(parts) >= 7:
-                            task_info = f"ID Task: {folder} | ID Group: {parts[1]} | ID Post: {parts[2]} | Tạo Lúc: {created_time} | Lệnh Đã Tạo: {config['prefix']}nhaytop"
-                            if is_vip:
-                                task_info += f" | Lệnh Được Tạo Bởi: <@{task_owner}>"
-                        elif parts[3] == "treoso":
-                            task_info = f"ID Tasks: {folder} | ID Box: {parts[1]} | Tạo Lúc: {created_time} | Lệnh Đã Tạo: {config['prefix']}treoso"
-                            if is_vip:
-                                task_info += f" | Lệnh Được Tạo Bởi: <@{task_owner}>"
-                        elif parts[3] == "nhay_zalo" and len(parts) >= 8:
-                            thread_type_display = "Threads" if parts[7] == "1" else "User"
-                            task_info = f"ID Tasks: {folder} | ID {thread_type_display}: {parts[1]} | Tạo Lúc: {created_time} | Lệnh Đã Tạo: {config['prefix']}nhayzalo"
-                            if is_vip:
-                                task_info += f" | Lệnh Được Tạo Bởi: <@{task_owner}>"
-                        elif parts[3] in ["nhay_normal", "nhay_tag"]:
-                            task_info = f"ID Tasks: {folder} | ID Box: {parts[1]} | Tạo Lúc: {created_time} | Lệnh Đã Tạo: {config['prefix']}nhay | Phương Thức: {method}"
-                            if is_vip:
-                                task_info += f" | Lệnh Được Tạo Bởi: <@{task_owner}>"
-                        else:
-                            task_info = f"ID Tasks: {folder} | ID Box: {parts[1]} | Tạo Lúc: {created_time} | Lệnh Đã Tạo: {config['prefix']}treo | Phương Thức: {method}"
-                            if is_vip:
-                                task_info += f" | Lệnh Được Tạo Bởi: <@{task_owner}>"
-                        tasks.append(task_info)
-    
-    if not tasks:
-        embed = discord.Embed(
-            title="Bạn Chưa Có Tạo Tasks Nào Hiện Tại Cả ❌",
-            color=0xFF0000
-        )
-        await ctx.send(embed=embed)
-        return
-
-    tasks_per_page = 10
-    total_pages = (len(tasks) + tasks_per_page - 1) // tasks_per_page
-    current_page = 1
-
-    def create_embed(page):
-        start_idx = (page - 1) * tasks_per_page
-        end_idx = start_idx + tasks_per_page
-        page_tasks = tasks[start_idx:end_idx]
-        description = "\n".join(page_tasks) + "\n𝐏𝐨𝐰𝐞𝐫 𝐁𝐲 𝐀𝐝𝐮 𝐄𝐦 𝐍𝐠𝐨̣𝐜🧃"
-
-        embed = discord.Embed(
-            title="🌟 Danh Sách Task 🌟",
-            description=description,
-            color=0x0099FF
-        )
-        embed.set_footer(text=f"Đang Ở Trang {page}/{total_pages}")
-        return embed
-
-    embed = create_embed(current_page)
-    if total_pages == 1:
-        await ctx.send(embed=embed)
-        return
-
-    view = discord.ui.View(timeout=None)
-
-    async def prev_callback(interaction):
-        nonlocal current_page
-        if current_page > 1:
-            current_page -= 1
-            embed = create_embed(current_page)
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.response.defer()
-
-    async def next_callback(interaction):
-        nonlocal current_page
-        if current_page < total_pages:
-            current_page += 1
-            embed = create_embed(current_page)
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.response.defer()
-
-    prev_button = discord.ui.Button(emoji="◀️", style=discord.ButtonStyle.primary)
-    next_button = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.primary)
-    prev_button.callback = prev_callback
-    next_button.callback = next_callback
-    view.add_item(prev_button)
-    view.add_item(next_button)
-
-    message = await ctx.send(embed=embed, view=view)
-
-    async def on_timeout():
-        for item in view.children:
-            item.disabled = True
-        try:
-            await message.edit(view=view)
-        except:
-            pass
-
-    view.on_timeout = on_timeout
-
 class DiscordView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -4063,303 +3994,396 @@ async def dis(ctx):
 @bot.command()
 async def getkey(ctx):
     user_id = str(ctx.author.id)
-    
+
     try:
-        
         data = load_user_data()
         global user_keys, user_nhapkey_count
         user_keys = data.get("user_keys", {})
         user_nhapkey_count = data.get("user_nhapkey_count", {})
-        
+
         random_key = generate_random_key()
-        
+
         user_keys[user_id] = {
             "key": random_key,
             "created_at": datetime.datetime.now().isoformat()
         }
-        
+
         save_user_data()
-        
+
         base_url = f"https://key-pied.vercel.app/?ma={random_key}"
         api_url = f"https://link4m.co/st?api=68b3c109702ba873dd52770c&url={base_url}"
-        
+
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
             'Connection': 'keep-alive',
             'Referer': 'https://link4m.co/'
         }
-        
+
         session = requests.Session()
         response = session.get(api_url, headers=headers, allow_redirects=True, timeout=15)
-        
-        if response.status_code in [200, 403]:
-            shortened_link = response.url
-            
-            if shortened_link and shortened_link != api_url:
-                current_count = user_nhapkey_count.get(user_id, 0)
-                next_task_count = 2 if current_count == 0 else 1
-                
-                embed = discord.Embed(
-                    title="Vượt Link Để Get Key",
-                    description=f"Vượt Lần Đầu Trong Ngày Link Đầu Được 2 Task Lần Sau 1 Task, Task Được Tính Cộng Dồn\n\nLink Get Key > {shortened_link}",
-                    color=0xFFFFFF
-                )
-                embed.add_field(
-                    name="📋 Thông Tin",
-                    value=f"• Lần Nhập Key Thành Công: {current_count}\n• Task Sẽ Nhận: {next_task_count}",
-                    inline=False
-                )
-                embed.set_footer(text="Sử Dụng Lệnh nhapkey <key> Để Nhận Tasks")
-                
-                await ctx.send(embed=embed)
-            else:
-                embed = discord.Embed(
-                    title="Vượt Link Để Get Key",
-                    description=f"Vượt Lần Đầu Trong Ngày Link Đầu Được 2 Task Lần Sau 1 Task, Task Được Tính Cộng Dồn\nLink Get Key > {base_url}",
-                    color=0xFFFFFF
-                )
-                embed.add_field(
-                    name="📋 Thông Tin",
-                    value=f"• Lần Nhập Key Thành Công: {user_nhapkey_count.get(user_id, 0)}\n• Task Sẽ Nhận: {2 if user_nhapkey_count.get(user_id, 0) == 0 else 1}\n• Key: `{random_key}`",
-                    inline=False
-                )
-                embed.set_footer(text="Sử Dụng Lệnh nhapkey <key> Để Nhận Tasks")
-                
-                await ctx.send(embed=embed)
-        else:
-            await ctx.send(f"❌ Lỗi API! Status: {response.status_code}")
-    
+
+        shortened_link = response.url if response.status_code in [200, 403] else base_url
+        current_count = user_nhapkey_count.get(user_id, 0)
+        next_task_count = 2 if current_count == 0 else 1
+
+        embed = discord.Embed(
+            title="🔑・Vượt Link Để Get Key",
+            description=(
+                f"✨ **Vượt link để nhận key**\n"
+                f"🔹 Lần đầu trong ngày nhận **2 task**\n"
+                f"🔹 Những lần sau nhận **1 task**\n"
+            ),
+            color=discord.Color.from_rgb(0, 255, 255),
+            timestamp=datetime.datetime.now()
+        )
+
+        embed.add_field(
+            name="📋 Thông Tin",
+            value=(
+                f"👤 Người yêu cầu: {ctx.author.mention}\n"
+                f"✅ Lần nhập key thành công: **{current_count}**\n"
+                f"🎯 Task sẽ nhận: **{next_task_count}**"
+            ),
+            inline=False
+        )
+
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+
+        embed.set_image(url="https://i.pinimg.com/originals/58/59/12/585912636b8c859239bb3e31c41a997b.gif")
+
+        embed.set_footer(text=f"Yêu cầu bởi {ctx.author} • {datetime.datetime.now().strftime('%H:%M:%S')}")
+
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="🔗 Truy cập link", url=shortened_link))
+
+        await ctx.send(embed=embed, view=view)
+
     except Exception as e:
         await ctx.send(f"❌ Lỗi: {str(e)}")
 
-@bot.command()
-async def nhapkey(ctx, key: str = None):
-    if not key:
-        embed = discord.Embed(
-            title="❌ Lỗi",
-            description="Vui Lòng Nhập Key!\nCách Dùng: `nhapkey <key>`",
-            color=0xFF0000
-        )
-        await ctx.send(embed=embed)
-        return
-    
-    user_id = str(ctx.author.id)
-    
-    data = load_user_data()
-    global user_keys, user_nhapkey_count
-    user_keys = data.get("user_keys", {})
-    user_nhapkey_count = data.get("user_nhapkey_count", {})
-    
-    if user_id not in user_keys or user_keys[user_id]["key"] != key:
-        embed = discord.Embed(
-            title="❌ Key Không Đúng",
-            description="Key Bạn Nhập Không Đúng Hoặc Đã Hết Hạn !",
-            color=0xFF0000
-        )
-        await ctx.send(embed=embed)
-        return
-    
-    if user_id not in user_nhapkey_count:
-        user_nhapkey_count[user_id] = 0
-    
-    user_nhapkey_count[user_id] += 1
-    
-    if user_nhapkey_count[user_id] == 1:
-        task_count = 2
-    else:
-        task_count = 1
-    
-    config = load_config()
-    if 'task' not in config:
-        config['task'] = {}
-    if 'task_used' not in config:
-        config['task_used'] = {}
-    
-    current_task = config['task'].get(user_id, 0)
-    new_task_count = current_task + task_count
-    config['task'][user_id] = new_task_count
-    
-    used_task = config['task_used'].get(user_id, 0)
-    config['task_used'][user_id] = used_task + task_count
-    
-    save_config(config)
-    
-    del user_keys[user_id]
-    save_user_data()
-    
-    embed = discord.Embed(
-        title="✅ Nhận Task Thành Công",
-        description=f"Bạn Đã Nhận Được **{task_count}** Task!\n\nTask Hiện Tại: **{new_task_count}**",
-        color=0x00FF00
+loading_gifs = [
+    "https://i.pinimg.com/originals/58/59/12/585912636b8c859239bb3e31c41a997b.gif",
+    "https://i.pinimg.com/originals/7d/ce/98/7dce98ac902442a7f17f0a270148bc13.gif",
+    "https://i.pinimg.com/originals/43/2a/6b/432a6b5b897e80bafad45da51a05f7e1.gif"
+]
+
+success_icons = ["✅", "🎉", "💎", "🚀", "🔥", "🌟"]
+
+class NhapKeyModal(discord.ui.Modal, title="🔑 Nhập Key Của Bạn"):
+    key_input = discord.ui.TextInput(
+        label="Nhập key",
+        placeholder="Dán key vào đây...",
+        style=discord.TextStyle.short,
+        required=True
     )
-    embed.set_footer(text="Task Đã Được Cộng Dồn Vào Tài Khoản Của Bạn")
-    
-    await ctx.send(embed=embed)
+
+    def __init__(self, ctx):
+        super().__init__()
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        key = str(self.key_input.value).strip()
+
+        data = load_user_data()
+        global user_keys, user_nhapkey_count
+        user_keys = data.get("user_keys", {})
+        user_nhapkey_count = data.get("user_nhapkey_count", {})
+
+        if user_id not in user_keys or user_keys[user_id]["key"] != key:
+            error_embed = discord.Embed(
+                title="❌ Key Không Đúng",
+                description="Key bạn nhập không đúng hoặc đã hết hạn!",
+                color=0xFF0000,
+                timestamp=datetime.datetime.now()
+            )
+            error_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            return
+
+        if user_id not in user_nhapkey_count:
+            user_nhapkey_count[user_id] = 0
+
+        user_nhapkey_count[user_id] += 1
+        task_count = 2 if user_nhapkey_count[user_id] == 1 else 1
+
+        config = load_config()
+        if 'task' not in config:
+            config['task'] = {}
+        if 'task_used' not in config:
+            config['task_used'] = {}
+
+        current_task = config['task'].get(user_id, 0)
+        new_task_count = current_task + task_count
+        config['task'][user_id] = new_task_count
+
+        used_task = config['task_used'].get(user_id, 0)
+        config['task_used'][user_id] = used_task + task_count
+
+        save_config(config)
+
+        del user_keys[user_id]
+        save_user_data()
+
+        icon = random.choice(success_icons)
+        gif = random.choice(loading_gifs)
+
+        success_embed = discord.Embed(
+            title=f"{icon} Nhập Key Thành Công",
+            description=f"Bạn đã nhận được **{task_count}** task!\n\n📊 Task hiện tại: **{new_task_count}**",
+            color=discord.Color.green(),
+            timestamp=datetime.datetime.now()
+        )
+        success_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        success_embed.set_image(url=gif)
+        success_embed.set_footer(text=f"Yêu cầu bởi {interaction.user} • {datetime.datetime.now().strftime('%H:%M:%S')}")
+
+        await interaction.response.send_message(embed=success_embed, ephemeral=True)
+
+
+class NhapKeyView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+
+    @discord.ui.button(label="🔑 Nhập Key", style=discord.ButtonStyle.green)
+    async def nhapkey_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("❌ Bạn không phải là người gọi lệnh này!", ephemeral=True)
+            return
+
+        modal = NhapKeyModal(self.ctx)
+        await interaction.response.send_modal(modal)
+
+
+@bot.command()
+async def nhapkey(ctx):
+    embed = discord.Embed(
+        title="🔑・Nhập Key Để Nhận Task",
+        description="Ấn vào **nút bên dưới** để mở popup nhập key.",
+        color=discord.Color.from_rgb(0, 255, 255),
+        timestamp=datetime.datetime.now()
+    )
+    embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    embed.set_image(url=random.choice(loading_gifs))
+    embed.set_footer(text=f"Yêu cầu bởi {ctx.author} • {datetime.datetime.now().strftime('%H:%M:%S')}")
+
+    view = NhapKeyView(ctx)
+    await ctx.send(embed=embed, view=view)
+
+stop_flags = globals().get("stop_flags", {})
+active_threads = globals().get("active_threads", {})
+active_senders = globals().get("active_senders", {})
+
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+SUCCESS_GIFS = [
+    "https://i.pinimg.com/originals/30/ba/d4/30bad4893f61e348b8661bd5f901c78b.gif",
+    "https://i.pinimg.com/originals/60/73/f9/6073f994a2a6dcc5269724714abf1aeb.gif",
+    "https://i.pinimg.com/originals/e8/79/9a/e8799a94439d4e402357f9ffe1178465.gif",
+    "https://i.pinimg.com/originals/0a/29/ef/0a29ef086e06897be8270ae2c18c7f33.gif",
+    "https://i.pinimg.com/originals/56/12/c8/5612c809271e6cc52e13b66df67b1b9a.gif"
+]
+FAIL_GIFS = [
+    "https://i.pinimg.com/originals/6b/a7/4e/6ba74e4e0959b2bdd008df8a51462d34.gif",
+    "https://i.pinimg.com/originals/a1/4f/58/a14f58a592bfdb9e5e6f73012ef22bb7.gif"
+]
+
+
+def register_thread(folder_id: str, thread: threading.Thread):
+    if not folder_id or not thread: return
+    stop_flags[folder_id] = False
+    active_threads[folder_id] = thread
+
+def unregister_thread(folder_id: str):
+    stop_flags.pop(folder_id, None)
+    active_threads.pop(folder_id, None)
+
+def is_stop_requested(folder_id: str) -> bool:
+    return stop_flags.get(folder_id, False)
+
+def stop_task_folder(folder_id: str, force: bool = False, wait_seconds: int = 8):
+    folder_path = os.path.join("data", folder_id)
+    stop_flags[folder_id] = True
+    try:
+        sender = active_senders.get(folder_id)
+        if sender:
+            try: sender.stop()
+            except: pass
+            try: del active_senders[folder_id]
+            except: pass
+    except: pass
+    thread = active_threads.get(folder_id)
+    if thread and getattr(thread, "is_alive", lambda: False)() and not force:
+        waited = 0.0
+        while thread.is_alive() and waited < wait_seconds:
+            time.sleep(0.25); waited += 0.25
+    if os.path.exists(folder_path):
+        tries, last_exc = 0, None
+        while tries < 6:
+            try:
+                shutil.rmtree(folder_path)
+                unregister_thread(folder_id)
+                return True, f"Đã dừng và xoá task `{folder_id}`"
+            except Exception as e:
+                last_exc = e; tries += 1; time.sleep(0.3)
+        return False, f"Không thể xoá thư mục `{folder_id}`: {last_exc}"
+    else:
+        unregister_thread(folder_id)
+        return True, f"Task `{folder_id}` không tồn tại (có thể đã dừng trước đó)."
+
+
+def _read_task_meta(folder):
+    folder_path = os.path.join("data", folder)
+    luutru = os.path.join(folder_path, "luutru.txt")
+    if not os.path.exists(luutru): 
+        return {"owner": "Unknown", "method": "unknown"}
+    try:
+        with open(luutru, "r", encoding="utf-8") as f:
+            parts = f.read().strip().split(" | ")
+        method = parts[3] if len(parts) >= 4 else "unknown"
+        owner = parts[4] if len(parts) >= 5 else "Unknown"
+        return {"owner": str(owner), "method": method}
+    except:
+        return {"owner": "Unknown", "method": "unknown"}
+
+def update_task_used(owner_id: str):
+    if str(owner_id) == str(config.get("ownerVIP")): return
+    used = config.get("task_used", {})
+    if owner_id in used:
+        used[owner_id] = max(0, used[owner_id] - 1)
+        if used[owner_id] == 0: used.pop(owner_id)
+    config["task_used"] = used
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
+class TaskSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="📂 → Chọn task để xoá (multi)", 
+                         min_values=1, max_values=min(len(options), 25), 
+                         options=options)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+class DeleteTasksView(discord.ui.View):
+    def __init__(self, author: discord.User, is_owner: bool, is_admin: bool, timeout: int = 90):
+        super().__init__(timeout=timeout)
+        self.author, self.is_owner, self.is_admin = author, is_owner, is_admin
+        self.select_obj = None
+        options = []
+        if os.path.exists("data"):
+            for folder in sorted(os.listdir("data")):
+                folder_path = os.path.join("data", folder)
+                if not os.path.isdir(folder_path) or not os.path.exists(os.path.join(folder_path,"luutru.txt")): 
+                    continue
+                meta = _read_task_meta(folder)
+                if not (self.is_owner or self.is_admin) and str(meta["owner"]) != str(author.id):
+                    continue
+                created_ts = int(os.path.getctime(folder_path))
+                created = datetime.datetime.fromtimestamp(created_ts).strftime("%d-%m-%Y %H:%M")
+                label = f"{folder} • {meta['method']}"
+                desc = f"👤 {meta['owner']} • 🕒 {created}"
+                options.append(discord.SelectOption(label=label[:100], description=desc[:100], value=folder, emoji="🗂️"))
+        if not options:
+            sel = TaskSelect([discord.SelectOption(label="❌ Không có task khả dụng", value="__none__")])
+            sel.disabled = True; self.add_item(sel)
+        else:
+            self.select_obj = TaskSelect(options); self.add_item(self.select_obj)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ Bạn không có quyền.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Xoá task đã chọn", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        values = getattr(self.select_obj, "values", [])
+        if not values or values == ["__none__"]:
+            return await interaction.response.send_message("⚠️ Chưa chọn task nào.", ephemeral=True)
+        deleted, errors = [], []
+        for fid in values:
+            ok, msg = stop_task_folder(fid, force=True)
+            if ok: deleted.append(fid); update_task_used(_read_task_meta(fid).get("owner"))
+            else: errors.append(msg)
+        desc = ""
+        if deleted: desc += "🟢 Đã xoá:\n" + "\n".join(f"`{d}`" for d in deleted)
+        if errors: desc += "\n🔴 Lỗi:\n" + "\n".join(errors)
+        embed = discord.Embed(title="📜 Kết quả xoá task", description=desc or "Không có thay đổi.",
+                              color=0x00FF00 if deleted else 0xFF0000)
+        embed.set_author(name=f"{self.author}", icon_url=self.author.display_avatar.url)
+        embed.set_footer(text=f"⏳ Yêu cầu lúc {datetime.datetime.now().strftime('%H:%M:%S')}")
+        if deleted: embed.set_image(url=random.choice(SUCCESS_GIFS))
+        elif errors: embed.set_image(url=random.choice(FAIL_GIFS))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        for item in self.children: item.disabled = True
+        try: await interaction.message.edit(view=self)
+        except: pass
+        self.stop()
+
+    @discord.ui.button(label="Huỷ", style=discord.ButtonStyle.secondary, emoji="🚫")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("❌ Đã huỷ.", ephemeral=True); self.stop()
+
+
 
 @bot.command()
 async def stoptask(ctx, task_id: str = None):
+    user_id, owner_id = str(ctx.author.id), str(config.get("ownerVIP"))
+    is_owner = user_id == owner_id
+    is_admin = ctx.author.guild_permissions.administrator
+
     if not task_id:
-        await ctx.send("Vui Lòng Nhập ID Tasks !")
-        return
-    
-    user_id = str(ctx.author.id)
-    is_vip = user_id == config['ownerVIP']
-    
+        view = DeleteTasksView(ctx.author, is_owner, is_admin)
+        embed = discord.Embed(title="🗂️  Quản lý Task", 
+                              description="Chọn task từ bên dưới, sau đó bấm 🗑️ **Xoá**.",
+                              color=discord.Colour.gold())
+        embed.set_author(name=f"{ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(text=f"📌 Người yêu cầu • {datetime.datetime.now().strftime('%H:%M:%S')}")
+        await ctx.send(embed=embed, view=view); return
+
     if task_id.lower() == "all":
-        if is_vip:
-            if os.path.exists('data'):
-                import shutil
-                shutil.rmtree('data')
-                os.makedirs('data')
-            embed = discord.Embed(
-                title="✅ Đã Xóa Toàn Bộ Task Thành Công ✅",
-                color=0x00FF00
-            )
-            await ctx.send(embed=embed)
-            return
-        else:
-            if not os.path.exists('data'):
-                embed = discord.Embed(
-                    title="❌ Không Có Task Nào Để Xóa ❌",
-                    color=0xFF0000
-                )
-                await ctx.send(embed=embed)
-                return
-            
-            user_tasks = []
-            for folder in os.listdir('data'):
-                folder_path = f"data/{folder}"
-                if os.path.isdir(folder_path) and os.path.exists(f"{folder_path}/luutru.txt"):
-                    with open(f"{folder_path}/luutru.txt", "r", encoding="utf-8") as f:
-                        content = f.read().strip()
-                    parts = content.split(" | ")
-                    task_owner = "Unknown"
-                    if parts[3] == "nhay_top_tag" and len(parts) >= 7:
-                        task_owner = parts[6]
-                    elif parts[3] == "treoso" and len(parts) >= 5:
-                        task_owner = parts[4]
-                    elif len(parts) >= 5:
-                        task_owner = parts[4]
-                    
-                    if task_owner == user_id:
-                        user_tasks.append(folder)
-            
-            if not user_tasks:
-                embed = discord.Embed(
-                    title="❌ Không Có Task Nào Để Xóa ❌",
-                    color=0xFF0000
-                )
-                await ctx.send(embed=embed)
-                return
-            
-            for task in user_tasks:
-                if task in active_senders:
-                    active_senders[task].stop()
-                    del active_senders[task]
-                import shutil
-                shutil.rmtree(f"data/{task}")
-            
-            embed = discord.Embed(
-                title="✅ Đã Xóa Toàn Bộ Task Thành Công ✅",
-                color=0x00FF00
-            )
-            await ctx.send(embed=embed)
-            return
-    
-    elif task_id.lower() == "random":
-        if not is_vip:
-            embed = discord.Embed(
-                title="❌ Chỉ Owner VIP Mới Có Thể Sử Dụng Lệnh Này ❌",
-                color=0xFF0000
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        if not os.path.exists('data'):
-            embed = discord.Embed(
-                title="❌ Không Có Task Nào Để Xóa ❌",
-                color=0xFF0000
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        all_folders = [f for f in os.listdir('data') if os.path.isdir(f"data/{f}")]
-        
-        if not all_folders:
-            embed = discord.Embed(
-                title="❌ Không Có Task Nào Để Xóa ❌",
-                color=0xFF0000
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        import random
-        num_to_delete = min(int(random.uniform(5, 15)), len(all_folders))
-        folders_to_delete = random.sample(all_folders, num_to_delete)
-        
-        deleted_tasks = []
-        for folder in folders_to_delete:
-            if folder in active_senders:
-                active_senders[folder].stop()
-                del active_senders[folder]
-            import shutil
-            shutil.rmtree(f"data/{folder}")
-            deleted_tasks.append(folder)
-        
-        task_list = "\n".join([f"> {task}" for task in deleted_tasks])
-        
-        embed = discord.Embed(
-            title="Đã Random Xóa Thành Công Các Task Như Sau",
-            description=f"{task_list}\n\nChúc Mn May Mắn Để Không Dính Task Của Mình 🤣🤣",
-            color=discord.Colour.from_rgb(255, 20, 147)
-        )
-        await ctx.send(embed=embed)
-        return
-    
-    else:
-        folder_path = f"data/{task_id}"
-        if not os.path.exists(folder_path):
-            embed = discord.Embed(
-                title="❌ ID Tasks Này Không Tồn Tại Hoặc Không Thuộc Quyền Sỡ Hữu Của Bạn ❌",
-                color=0xFF0000
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        if os.path.exists(f"{folder_path}/luutru.txt"):
-            with open(f"{folder_path}/luutru.txt", "r", encoding="utf-8") as f:
-                content = f.read().strip()
-            parts = content.split(" | ")
-            task_owner = "Unknown"
-            if parts[3] == "nhay_top_tag" and len(parts) >= 7:
-                task_owner = parts[6]
-            elif parts[3] == "treoso" and len(parts) >= 5:
-                task_owner = parts[4]
-            elif len(parts) >= 5:
-                task_owner = parts[4]
-            
-            if not is_vip and task_owner != user_id:
-                embed = discord.Embed(
-                    title="❌ ID Tasks Này Không Tồn Tại Hoặc Không Thuộc Quyền Sỡ Hữu Của Bạn ❌",
-                    color=0xFF0000
-                )
-                await ctx.send(embed=embed)
-                return
-        
-        if task_id in active_senders:
-            active_senders[task_id].stop()
-            del active_senders[task_id]
-        
-        import shutil
-        shutil.rmtree(folder_path)
-        embed = discord.Embed(
-            title=f"✅ Xóa Thành Công Tasks > {task_id} ✅",
-            color=0x00FF00
-        )
-        await ctx.send(embed=embed)
-        
+        folders = [f for f in os.listdir("data")
+                   if (is_owner or is_admin or _read_task_meta(f)["owner"] == user_id)]
+        if not folders: 
+            return await ctx.send(embed=discord.Embed(title="❌ Không có task để xoá", color=0xFF0000))
+        for fid in folders: stop_task_folder(fid, force=True); update_task_used(_read_task_meta(fid).get("owner"))
+        embed = discord.Embed(title="✅ Đã xoá toàn bộ task", color=0x00FF00)
+        embed.set_image(url=random.choice(SUCCESS_GIFS))
+        return await ctx.send(embed=embed)
+
+    if task_id.lower() == "random":
+        if not (is_owner or is_admin):
+            return await ctx.send(embed=discord.Embed(title="❌ Chỉ Owner/Admin được random xoá", color=0xFF0000))
+        all_folders = [f for f in os.listdir("data")]
+        if not all_folders: 
+            return await ctx.send(embed=discord.Embed(title="❌ Không có task để xoá", color=0xFF0000))
+        num, pick = min(int(random.uniform(3, 8)), len(all_folders)), random.sample(all_folders, num)
+        for fid in pick: stop_task_folder(fid, force=True); update_task_used(_read_task_meta(fid).get("owner"))
+        desc = "\n".join([f"• `{fid}`" for fid in pick])
+        embed = discord.Embed(title="🎲 Random xoá task", description=desc, color=discord.Colour.magenta())
+        embed.set_image(url=random.choice(SUCCESS_GIFS))
+        return await ctx.send(embed=embed)
+
+    folder_path = os.path.join("data", task_id)
+    if not os.path.exists(folder_path):
+        return await ctx.send(embed=discord.Embed(title="❌ Task không tồn tại", color=0xFF0000))
+    meta = _read_task_meta(task_id)
+    if not (is_owner or is_admin) and str(meta.get("owner")) != user_id:
+        return await ctx.send(embed=discord.Embed(title="❌ Bạn không có quyền xoá task này", color=0xFF0000))
+    ok, msg = stop_task_folder(task_id, force=True)
+    if ok: 
+        update_task_used(str(meta.get("owner")))
+        embed = discord.Embed(title="✅ Thành công", description=msg, color=0x00FF00)
+        embed.set_image(url=random.choice(SUCCESS_GIFS))
+        return await ctx.send(embed=embed)
+    else: 
+        embed = discord.Embed(title="❌ Thất bại", description=msg, color=0xFF0000)
+        embed.set_image(url=random.choice(FAIL_GIFS))
+        return await ctx.send(embed=embed)
+
 @bot.command()
 
 async def listbox(ctx):
@@ -4367,14 +4391,14 @@ async def listbox(ctx):
         title="📋 Lấy Danh Sách Box Facebook",
         description="Ấn Vào Nút **Start** Để Nhập Cookies",
         color=0xFF69B4,
-        timestamp=datetime.datetime.utcnow()
+        timestamp=datetime.datetime.now(datetime.UTC)
     )
     embed.add_field(
         name="📌 Hướng Dẫn",
         value="• Nhập Cookies Facebook\n• Bot Sẽ Tự Động Lấy Tất Cả Box Có Trong Cookies\n• Kết Quả Sẽ Được Hiển Thị Theo Trang",
         inline=False
     )
-    embed.set_footer(text="���𝐞� � �� �� ���̣�🧃 ", icon_url=bot.user.avatar.url if bot.user.avatar else None)
+    embed.set_footer(text=" 𝐃𝐚𝐧𝐧𝐲 𝐏𝐡𝐚𝐧𝐭𝐨𝐦 🧃 ", icon_url=bot.user.avatar.url if bot.user.avatar else None)
     
     view = ListBoxView()
     await ctx.send(embed=embed, view=view)
@@ -4401,91 +4425,263 @@ async def nhaypoll(ctx):
     view = NhayPollView()
     await ctx.send(embed=embed, view=view)
 
-@bot.command()
-@check_ownervip()
-async def addtask(ctx, user: discord.User, quantity: int):
-    if user is None or quantity is None:
-        await ctx.send("Format: `addtask @user <số_lượng>`")
-        return
+import asyncio
+import discord
 
-    if quantity <= 0:
-        await ctx.send("Số Lượng Task Phải Lớn Hơn 0.")
-        return
-
-    config = load_config()
-    if 'task' not in config:
-        config['task'] = {}
-    if 'admin_added_users' not in config:
-        config['admin_added_users'] = {}
-
-    user_id_str = str(user.id)
-    
-    config['task'][user_id_str] = quantity
-    
-    config['admin_added_users'][user_id_str] = True
-    
-    save_config(config)
-
+def error_embed(ctx, title: str, description: str):
+    """Tạo embed lỗi VIP"""
     embed = discord.Embed(
-        title="✅ Thêm Task Thành Công",
-        description=f"Đã Cấp Cho {user.mention} Quyền Tạo Tối Đa **{quantity}** Task.\n\n",
-        color=0x00FF00
+        title=title,
+        description=description,
+        color=discord.Color.red(),
+        timestamp=datetime.datetime.utcnow()
     )
-    embed.add_field(
-        name="📊 Thông Tin",
-        value=f"• Task Được Cấp: {quantity}\n• Loại: Admin Added\n• Sẽ Không Bị Reset Hàng Ngày",
-        inline=False
+    embed.set_author(
+        name=f"Yêu cầu bởi {ctx.author} ({ctx.author.id})",
+        icon_url=ctx.author.display_avatar.url
     )
-    await ctx.send(embed=embed)
+    embed.set_footer(text=f"🚨 Format Sai • {datetime.datetime.now().strftime('%H:%M:%S %d-%m-%Y')}")
+    return embed
+
+
+# ====== ADD TASK ======
+@bot.command()
+@check_ownervip()
+async def addtask(ctx, user: discord.User = None, quantity: int = None):
+    try:
+        if user is None or quantity is None:
+            embed = error_embed(
+                ctx,
+                "❌ Sai Format",
+                "Vui lòng dùng đúng format:\n```!addtask @user <số_lượng>```"
+            )
+            return await ctx.send(embed=embed)
+
+        if quantity <= 0:
+            embed = error_embed(
+                ctx,
+                "⚠️ Số Lượng Không Hợp Lệ",
+                "Số lượng task phải **lớn hơn 0**."
+            )
+            return await ctx.send(embed=embed)
+
+        # === fallback cho user đặc biệt ===
+        if user is None:
+            user = await bot.fetch_user(1402942118795939850)
+
+        config = load_config()
+        if "task" not in config:
+            config["task"] = {}
+        if "admin_added_users" not in config:
+            config["admin_added_users"] = {}
+
+        user_id_str = str(user.id)
+        old_quantity = config["task"].get(user_id_str, 0)
+        new_quantity = old_quantity + quantity
+
+        config["task"][user_id_str] = new_quantity
+        config["admin_added_users"][user_id_str] = True
+        save_config(config)
+
+        loading = await ctx.send(embed=discord.Embed(
+            description=f"⏳ Đang xử lý cấp **{quantity}** task cho {user.mention}...",
+            color=discord.Color.orange()
+        ))
+        await asyncio.sleep(2)
+
+        if new_quantity <= 5:
+            color = discord.Color.gold()
+        elif new_quantity <= 20:
+            color = discord.Color.blue()
+        else:
+            color = discord.Color.green()
+
+        embed = discord.Embed(
+            title="🧃 𝐓𝐀𝐒𝐊 𝐆𝐑𝐀𝐍𝐓𝐄𝐃 🧃",
+            description=f"✅ {user.mention} vừa được cấp **{quantity}** Task!",
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        embed.set_author(name=f"Admin: {ctx.author} ({ctx.author.id})", icon_url=ctx.author.display_avatar.url)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(
+            name="📊 Chi Tiết",
+            value=(
+                f"🔹 **Task Được Cấp Thêm:** `{quantity}`\n"
+                f"🔹 **Tổng Hiện Tại:** `{new_quantity}`\n"
+                f"🔹 **Loại:** `Admin Added`\n"
+                f"🔹 **Reset Hàng Ngày:** ❌"
+            ),
+            inline=False
+        )
+        embed.set_footer(text=f"🚀 Powered by Danny Phantom 🧃 • {datetime.datetime.now().strftime('%H:%M:%S %d-%m-%Y')}")
+
+        await loading.delete()
+        msg = await ctx.send(embed=embed)
+        await msg.add_reaction("🧃")
+
+        print(f"[LOG][ADD] {ctx.author} ({ctx.author.id}) đã cấp {quantity} task cho {user} ({user.id}). Tổng hiện tại: {new_quantity}")
+
+    except Exception as e:
+        embed = error_embed(ctx, "❌ Lỗi Hệ Thống", f"`{e}`")
+        await ctx.send(embed=embed)
+        print(f"[ERROR][ADD] {e}")
 
 @bot.command()
 @check_ownervip()
-async def removetask(ctx, user: discord.User):
-    if user is None:
-        await ctx.send("Format: `removetask @user`")
+async def listuser(ctx):
+    config = load_config()
+
+    if "task" not in config or not config["task"]:
+        embed = discord.Embed(
+            title="📋 Danh Sách Task",
+            description="❌ Hiện tại **chưa có user nào** được cấp task.",
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="🚀 Powered by Danny Phantom 🧃")
+        await ctx.send(embed=embed)
         return
 
-    config = load_config()
-    user_id_str = str(user.id)
+    users_data = []
+    for user_id, total_task in config["task"].items():
+        task_used = config.get("task_used", {}).get(user_id, 0)
+        admin_added = "✅" if config.get("admin_added_users", {}).get(user_id, False) else "❌"
 
-    if 'task' in config and user_id_str in config['task']:
-        del config['task'][user_id_str]
-        save_config(config)
-        embed = discord.Embed(
-            title="✅ Xóa Task Thành Công",
-            description=f"Đã Xóa Quyền Tạo Task Của > {user.mention}.",
-            color=0x00FF00
+        # Lấy thông tin user
+        member = ctx.guild.get_member(int(user_id))
+        if member:
+            user_display = f"{member.mention} | {member} (`{user_id}`)"
+        else:
+            try:
+                user = await bot.fetch_user(int(user_id))
+                user_display = f"{user.mention} | {user} (`{user_id}`)"
+            except:
+                user_display = f"<@{user_id}> (`{user_id}`)"
+
+        details = (
+            f"🔹 **Task còn lại:** `{total_task}`\n"
+            f"🔹 **Task đã dùng:** `{task_used}`\n"
+            f"🔹 **Admin cấp:** {admin_added}"
         )
-        await ctx.send(embed=embed)
-    else:
+        users_data.append((user_display, details))
+
+    # Pagination
+    per_page = 10
+    pages = [users_data[i:i+per_page] for i in range(0, len(users_data), per_page)]
+    current_page = 0
+
+    def create_embed(page):
         embed = discord.Embed(
-            title="❌ Người Dùng Không Tồn Tại",
-            description=f"{user.mention} Không Có Trong Danh Sách Được Cấp Tasks.",
-            color=0xFF0000
+            title="📋 Danh Sách User Có Task",
+            description=f"Trang {page+1}/{len(pages)}",
+            color=discord.Color.blue(),
+            timestamp=ctx.message.created_at
         )
+        embed.set_footer(text="🚀 Powered by Danny Phantom 🧃")
+
+        for name, details in pages[page]:
+            embed.add_field(name=name, value=details, inline=False)
+        return embed
+
+    message = await ctx.send(embed=create_embed(current_page))
+    if len(pages) <= 1:
+        return
+
+    await message.add_reaction("◀️")
+    await message.add_reaction("▶️")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["◀️", "▶️"] and reaction.message.id == message.id
+
+    while True:
+        try:
+            reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+            await message.remove_reaction(reaction.emoji, user)
+
+            if str(reaction.emoji) == "▶️" and current_page < len(pages) - 1:
+                current_page += 1
+                await message.edit(embed=create_embed(current_page))
+            elif str(reaction.emoji) == "◀️" and current_page > 0:
+                current_page -= 1
+                await message.edit(embed=create_embed(current_page))
+
+        except asyncio.TimeoutError:
+            break
+
+# ====== REMOVE TASK ======
+@bot.command()
+@check_ownervip()
+async def removetask(ctx, user: discord.User = None):
+    try:
+        if user is None:
+            embed = error_embed(
+                ctx,
+                "❌ Sai Format",
+                "Vui lòng dùng đúng format:\n```!removetask @user```"
+            )
+            return await ctx.send(embed=embed)
+
+        config = load_config()
+        user_id_str = str(user.id)
+
+        loading = await ctx.send(embed=discord.Embed(
+            description=f"⏳ Đang xử lý gỡ task của {user.mention}...",
+            color=discord.Color.orange()
+        ))
+        await asyncio.sleep(2)
+
+        if "task" in config and user_id_str in config["task"]:
+            del config["task"][user_id_str]
+            save_config(config)
+
+            embed = discord.Embed(
+                title="🗑️ 𝐑𝐄𝐌𝐎𝐕𝐄 𝐓𝐀𝐒𝐊 🗑️",
+                description=f"✅ Đã xóa toàn bộ quyền tạo task của {user.mention}.",
+                color=discord.Color.green(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_author(name=f"Admin: {ctx.author} ({ctx.author.id})", icon_url=ctx.author.display_avatar.url)
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.set_footer(text=f"🚀 Powered by Danny Phantom 🧃 • {datetime.datetime.now().strftime('%H:%M:%S %d-%m-%Y')}")
+
+            await loading.delete()
+            msg = await ctx.send(embed=embed)
+            await msg.add_reaction("🧃")
+
+            print(f"[LOG][REMOVE] {ctx.author} ({ctx.author.id}) đã xóa task của {user} ({user.id})")
+
+        else:
+            embed = error_embed(
+                ctx,
+                "❌ Người Dùng Không Có Task",
+                f"{user.mention} không có trong danh sách được cấp task."
+            )
+            await loading.delete()
+            await ctx.send(embed=embed)
+
+            print(f"[LOG][REMOVE] {ctx.author} ({ctx.author.id}) cố xóa task nhưng {user} ({user.id}) không có task.")
+
+    except Exception as e:
+        embed = error_embed(ctx, "❌ Lỗi Hệ Thống", f"`{e}`")
         await ctx.send(embed=embed)
+        print(f"[ERROR][REMOVE] {e}")
 import discord
 from discord.ext import commands
 import random
-
-
 
 GIF_LIST = [
     "https://i.pinimg.com/originals/7d/ce/98/7dce98ac902442a7f17f0a270148bc13.gif",
     "https://i.pinimg.com/originals/5d/2c/44/5d2c44694918947aede42306cb7154d0.gif",
     "https://i.pinimg.com/originals/35/d1/98/35d19823ff425d809e619558cc3e0e90.gif",
     "https://i.pinimg.com/originals/84/4f/7e/844f7e76c6e1eeb8266be6b17362b385.gif",
-    "https://i.pinimg.com/originals/ed/d1/96/edd1969a697f7ebdf2032957f53b44f0.gif",
-    "https://i.pinimg.com/originals/fb/54/1a/fb541a7bcb99e2a85de93c05a4ba6a72.gif"
 ]
 
 COLOR_LIST = [
     discord.Color.from_rgb(255, 99, 132),
-    discord.Color.from_rgb(54, 162, 235), 
+    discord.Color.from_rgb(54, 162, 235),
     discord.Color.from_rgb(255, 206, 86),
     discord.Color.from_rgb(75, 192, 192),
-    discord.Color.from_rgb(153, 102, 255),  
-    discord.Color.from_rgb(255, 159, 64),  
+    discord.Color.from_rgb(153, 102, 255),
 ]
 
 def get_page_color(index: int):
@@ -4493,17 +4689,16 @@ def get_page_color(index: int):
 
 
 PAGES = [
-    ("🎉 Lời cảm ơn", "Menu chính của bot"),
-    ("📜 Task", """
+    ("🎉", "Lời cảm ơn", "Menu chính của bot"),
+    ("📜", "Task", """
 🤍 **addtask** — Add Task Cho Người Xài
 🤍 **removetask** — Xoá Task Người Dùng
-🤍 **danhsachtask** — Xem danh sách task
 """),
-    ("🔑 Key", """
+    ("🔑", "Key", """
 🔑 **getkey** — Lấy Key để có Task
 🔐 **nhapkey** — Nhập Key để nhận Task
 """),
-    ("💎 Messenger", """
+    ("💎", "Messenger", """
 💤 **treo** — Treo Messenger Bất Tử
 🎭 **nhay** — Nhây Vip Fake Soạn
 📜 **treoso** — Treo Sớ Bá Đạo
@@ -4512,14 +4707,14 @@ PAGES = [
 🤖 **meta** — Hỏi Meta
 💀 **nhaynamebox** — Nhây Name Box
 """),
-    ("📂 File", """
+    ("📂", "File", """
 📁 **setfile** — Set file dùng cho các chức năng
 📁 **xemfile** — Xem file đã set
 """),
-    ("🎭 Discord", """
+    ("🎭", "Discord", """
 📲 **dis** — All Chức Năng Discord
 """),
-    ("⛔ Stop Task", """
+    ("⛔", "Stop Task", """
 ⛔ **stoptask** — Stop Task Theo ID
 """),
 ]
@@ -4527,27 +4722,30 @@ PAGES = [
 
 class MenuDropdown(discord.ui.Select):
     def __init__(self, parent_view):
-        options = [discord.SelectOption(label=title, emoji=title[0]) for title, _ in PAGES]
+        options = [
+            discord.SelectOption(label=title, emoji=emoji) 
+            for emoji, title, _ in PAGES
+        ]
         super().__init__(placeholder="📌 Chọn khu vực Menu...", options=options, min_values=1, max_values=1)
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
-        title, _ = [(t, d) for t, d in PAGES if t == self.values[0]][0]
-        self.parent_view.current_index = [i for i, (t, _) in enumerate(PAGES) if t == title][0]
+        _, title, _ = [(e, t, d) for e, t, d in PAGES if t == self.values[0]][0]
+        self.parent_view.current_index = [i for i, (_, t, _) in enumerate(PAGES) if t == title][0]
         embed = self.parent_view.make_embed(interaction.user)
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 class MenuView(discord.ui.View):
     def __init__(self, author):
-        super().__init__(timeout=90)
+        super().__init__(timeout=120)
         self.author = author
         self.current_index = 0
         self.message = None
         self.add_item(MenuDropdown(self))
 
     def make_embed(self, user):
-        title, desc = PAGES[self.current_index]
+        emoji, title, desc = PAGES[self.current_index]
 
         if self.current_index == 0:
             desc = f"""
@@ -4556,13 +4754,13 @@ class MenuView(discord.ui.View):
 🗿 Đây là **menu chính của bot**, bạn có thể:
 - Dùng **dropdown** để chọn tab nhanh
 - Hoặc bấm **⏮️ ⏭️** để chuyển trang
-- Menu sẽ **tự xoá sau 90s**
+- Menu sẽ **tự xoá sau 120s**
 
 ❤️ Cảm ơn {user.mention} đã tin tưởng & sử dụng bot!
 """
 
         embed = discord.Embed(
-            title=f"{title} | 🧃 Power By Minato",
+            title=f"{emoji} {title} | 🧃 Power By Minato",
             description=desc,
             color=get_page_color(self.current_index)
         )
@@ -4572,10 +4770,10 @@ class MenuView(discord.ui.View):
         else:
             embed.set_thumbnail(url=random.choice(GIF_LIST))
 
-        embed.set_footer(text="𝙋𝙤𝙬𝙚𝙧 𝘽𝙮 Minato🧃")
+        embed.set_footer(text=f"Trang {self.current_index+1}/{len(PAGES)} • 𝙋𝙤𝙬𝙚𝙧 𝘽𝙮 Minato🧃")
+        embed.set_author(name=str(user), icon_url=user.avatar.url if user.avatar else None)
         return embed
 
-   
     @discord.ui.button(label="⏮️ Trước", style=discord.ButtonStyle.primary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user != self.author:
@@ -4584,7 +4782,6 @@ class MenuView(discord.ui.View):
         embed = self.make_embed(interaction.user)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    
     @discord.ui.button(label="⏭️ Sau", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user != self.author:
@@ -4593,32 +4790,20 @@ class MenuView(discord.ui.View):
         embed = self.make_embed(interaction.user)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    
-    @discord.ui.button(label="🔧 Admin", style=discord.ButtonStyle.danger)
-    async def admin_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="👑 Liên hệ Admin",
-            description="Bạn có thể liên hệ Admin qua **Discord** hoặc **Facebook**:",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="🌐 Discord", value="<@1348609207716282501>", inline=False)
-        embed.add_field(name="📘 Facebook", value="[🔥 Admin Facebook](https://www.facebook.com/hot.war.vang)", inline=False)
-        embed.set_thumbnail(url="https://i.pinimg.com/originals/7f/ff/57/7fff576fe1e9583a9d83d38b3c2ddaaf.gif")
-        embed.set_image(url="https://i.pinimg.com/originals/0f/2f/7d/0f2f7dbf6c33f7912f38c676fedf9d8e.gif")
-        embed.set_footer(text=f"Yêu cầu bởi {interaction.user}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    @discord.ui.button(label="🏠 Home", style=discord.ButtonStyle.secondary)
+    async def home(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_index = 0
+        embed = self.make_embed(interaction.user)
+        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="🆘 Support", style=discord.ButtonStyle.success)
-    async def support_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="📖 Show All", style=discord.ButtonStyle.success)
+    async def show_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
-            title="🆘 Liên hệ Hỗ Trợ",
-            description="Nếu gặp lỗi hoặc cần hướng dẫn, liên hệ ngay Team Support:",
-            color=discord.Color.green()
+            title="📖 Danh sách toàn bộ lệnh",
+            color=discord.Color.gold()
         )
-        embed.add_field(name="🌐 Discord", value="<@1402942118795939850>", inline=False)
-        embed.add_field(name="📘 Facebook", value="[🌿 Support Facebook](https://www.facebook.com/Staw01/)", inline=False)
-        embed.set_thumbnail(url="https://i.pinimg.com/originals/5f/f6/50/5ff650b2c35cfe7ce1d0e052f1416bce.gif")
-        embed.set_image(url="https://i.pinimg.com/originals/2c/2a/16/2c2a16e474dce56c1e5d04eb8e75efb5.gif")
+        for emoji, title, desc in PAGES[1:]:
+            embed.add_field(name=f"{emoji} {title}", value=desc, inline=False)
         embed.set_footer(text=f"Yêu cầu bởi {interaction.user}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -4629,14 +4814,13 @@ class MenuView(discord.ui.View):
             except:
                 pass
 
+
 @bot.command()
 async def menu(ctx):
     view = MenuView(ctx.author)
-    title, desc = PAGES[0]
     embed = view.make_embed(ctx.author)
     msg = await ctx.send(embed=embed, view=view)
     view.message = msg
-
 @bot.command()
 async def treoso(ctx):
     embed = discord.Embed(
